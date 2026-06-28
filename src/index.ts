@@ -27,6 +27,14 @@ export type { VerifyOptions, VerifyReport, VerifyIssue, DocCheck } from "./verif
 export { ckanResources, selectResources, byFormat, downloadFile, extractZip } from "./download.js";
 export type { CkanResource } from "./download.js";
 
+export { compareSchemas, compareSnapshots, snapshotSchemas } from "./schema-compat.js";
+export type {
+  SchemaChange,
+  CompareResult,
+  SchemaSnapshot,
+  JsonSchemaObject,
+} from "./schema-compat.js";
+
 export { buildManifestV2, validateManifestV2 } from "./manifest.js";
 export type {
   ManifestV2,
