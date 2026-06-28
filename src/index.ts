@@ -11,3 +11,9 @@ export type { CompressOptions, CompressResult } from "./compress.js";
 
 export { ProgressLogger } from "./progress.js";
 export type { ProgressEvent, ProgressEntry, ProgressLoggerOptions } from "./progress.js";
+
+export { countByKey, generateMetadata, writeMetadata } from "./metadata.js";
+export type { BuildMetadata, MetadataOptions, SourceInfo } from "./metadata.js";
+
+export { split } from "./split.js";
+export type { SplitOptions, SplitResult } from "./split.js";
