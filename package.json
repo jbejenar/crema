@@ -26,7 +26,7 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepare": "husky || true"
+    "prepare": "husky || true; npm run build"
   },
   "author": "jbejenar",
   "license": "Apache-2.0",

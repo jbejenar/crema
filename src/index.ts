@@ -17,3 +17,21 @@ export type { BuildMetadata, MetadataOptions, SourceInfo } from "./metadata.js";
 
 export { split } from "./split.js";
 export type { SplitOptions, SplitResult } from "./split.js";
+
+export { streamFlatten, applySchemaVersion, FLATTEN_POSTGRES_CONFIG } from "./flatten-engine.js";
+export type { StreamFlattenOptions, SafeParser } from "./flatten-engine.js";
+
+export { verify } from "./verify-harness.js";
+export type { VerifyOptions, VerifyReport, VerifyIssue, DocCheck } from "./verify-harness.js";
+
+export { buildManifestV2, validateManifestV2 } from "./manifest.js";
+export type {
+  ManifestV2,
+  ManifestFile,
+  ManifestPipeline,
+  ManifestSource,
+  ManifestIndex,
+  ManifestIndexSettings,
+  BuildManifestOptions,
+  ValidateManifestOptions,
+} from "./manifest.js";

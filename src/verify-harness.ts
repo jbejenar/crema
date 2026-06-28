@@ -1,0 +1,170 @@
+/**
+ * crema — NDJSON verify harness.
+ *
+ * Streams an NDJSON file line-by-line and produces a structured report:
+ *   - JSON well-formedness
+ *   - optional schema validation (any Zod-style `safeParse`)
+ *   - id-field uniqueness
+ *   - injected per-document domain checks (return a message on failure)
+ *   - optional total-count assertion
+ *
+ * This is the generic *harness* extracted from flat-white's verify.ts; the
+ * domain-specific checks (coordinate bounds, postcode ranges, ABN checksum,
+ * enum sets, …) are injected by the consumer — the harness knows none of them.
+ */
+
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
+import type { SafeParser } from "./flatten-engine.js";
+
+export interface VerifyIssue {
+  /** 1-based line number. */
+  line: number;
+  /** The document's id (from idField) if available. */
+  id: string | null;
+  /** The check that produced the issue (e.g. "json", "schema", or a check name). */
+  check: string;
+  message: string;
+}
+
+/** A per-document domain check: return a failure message, or null if it passes. */
+export interface DocCheck<TDoc> {
+  name: string;
+  run: (doc: TDoc) => string | null;
+}
+
+export interface VerifyOptions<TDoc> {
+  /** Path to the NDJSON file to verify. */
+  ndjsonPath: string;
+  /** Optional schema validator; failures are counted and sampled. */
+  schema?: SafeParser<TDoc>;
+  /** Per-document domain checks. */
+  checks?: DocCheck<TDoc>[];
+  /** Field used as the document id for uniqueness + issue labelling. Default "_id". */
+  idField?: string;
+  /** If set, the total line count must equal this. */
+  expectedCount?: number;
+  /** Cap on stored issue samples (default 100). Counts are always exact. */
+  maxIssues?: number;
+}
+
+export interface VerifyReport {
+  ok: boolean;
+  totalLines: number;
+  /** Lines that parsed and passed schema validation (or all parsed lines if no schema). */
+  validCount: number;
+  jsonFailures: number;
+  schemaFailures: number;
+  duplicateIds: number;
+  /** Per-check failure counts, keyed by check name. */
+  checkFailures: Record<string, number>;
+  /** Sampled issues (capped at maxIssues). */
+  issues: VerifyIssue[];
+  expectedCount?: number;
+  countMatches?: boolean;
+}
+
+/**
+ * Verify an NDJSON file. Streaming and memory-safe regardless of file size.
+ */
+export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<VerifyReport> {
+  const {
+    ndjsonPath,
+    schema,
+    checks = [],
+    idField = "_id",
+    expectedCount,
+    maxIssues = 100,
+  } = options;
+
+  let totalLines = 0;
+  let validCount = 0;
+  let jsonFailures = 0;
+  let schemaFailures = 0;
+  let duplicateIds = 0;
+  const checkFailures: Record<string, number> = {};
+  const issues: VerifyIssue[] = [];
+  const seenIds = new Set<string>();
+
+  const addIssue = (issue: VerifyIssue): void => {
+    if (issues.length < maxIssues) issues.push(issue);
+  };
+
+  const rl = createInterface({
+    input: createReadStream(ndjsonPath),
+    crlfDelay: Infinity,
+  });
+
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    totalLines++;
+
+    let doc: Record<string, unknown>;
+    try {
+      doc = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      jsonFailures++;
+      addIssue({ line: totalLines, id: null, check: "json", message: "malformed JSON" });
+      continue;
+    }
+
+    const rawId = doc[idField];
+    const id = typeof rawId === "string" ? rawId : rawId == null ? null : String(rawId);
+
+    // id uniqueness
+    if (id != null) {
+      if (seenIds.has(id)) {
+        duplicateIds++;
+        addIssue({ line: totalLines, id, check: "unique", message: `duplicate ${idField}: ${id}` });
+      } else {
+        seenIds.add(id);
+      }
+    }
+
+    // schema validation
+    let typed: TDoc = doc as unknown as TDoc;
+    if (schema) {
+      const result = schema.safeParse(doc);
+      if (!result.success) {
+        schemaFailures++;
+        addIssue({ line: totalLines, id, check: "schema", message: result.error.message });
+        continue; // don't run domain checks on a schema-invalid doc
+      }
+      typed = result.data;
+    }
+    validCount++;
+
+    // domain checks
+    for (const check of checks) {
+      const message = check.run(typed);
+      if (message != null) {
+        checkFailures[check.name] = (checkFailures[check.name] ?? 0) + 1;
+        addIssue({ line: totalLines, id, check: check.name, message });
+      }
+    }
+  }
+
+  const countMatches = expectedCount === undefined ? undefined : totalLines === expectedCount;
+  const ok =
+    jsonFailures === 0 &&
+    schemaFailures === 0 &&
+    duplicateIds === 0 &&
+    Object.keys(checkFailures).length === 0 &&
+    (countMatches ?? true);
+
+  const report: VerifyReport = {
+    ok,
+    totalLines,
+    validCount,
+    jsonFailures,
+    schemaFailures,
+    duplicateIds,
+    checkFailures,
+    issues,
+  };
+  if (expectedCount !== undefined) {
+    report.expectedCount = expectedCount;
+    report.countMatches = countMatches;
+  }
+  return report;
+}
