@@ -24,6 +24,9 @@ export type { StreamFlattenOptions, SafeParser } from "./flatten-engine.js";
 export { verify } from "./verify-harness.js";
 export type { VerifyOptions, VerifyReport, VerifyIssue, DocCheck } from "./verify-harness.js";
 
+export { ckanResources, selectResources, byFormat, downloadFile, extractZip } from "./download.js";
+export type { CkanResource } from "./download.js";
+
 export { buildManifestV2, validateManifestV2 } from "./manifest.js";
 export type {
   ManifestV2,
