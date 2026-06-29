@@ -22,6 +22,7 @@ row→document mapper, a Zod `schema`, verify checks, and source config.
 | `verify`                                                                         | NDJSON verify harness (domain checks injected)                               |
 | `generateMetadata` / `writeMetadata`                                             | build metadata (per-key counts, `sources[]`, attribution)                    |
 | `compareSnapshots` / `snapshotSchemas`                                           | JSON Schema diff + Zod snapshotting                                          |
+| `convertToParquet` / `ParquetSchema`                                             | streaming NDJSON → Parquet (schema + row-mapper injected)                    |
 | `ckanResources` / `selectResources` / `byFormat` / `downloadFile` / `extractZip` | data.gov.au CKAN discovery + atomic download/extract                         |
 | `ProgressLogger`                                                                 | structured JSON progress logging                                             |
 

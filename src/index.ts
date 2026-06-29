@@ -34,3 +34,6 @@ export type {
   SchemaSnapshot,
   JsonSchemaObject,
 } from "./schema-compat.js";
+
+export { convertToParquet, ParquetSchema } from "./parquet.js";
+export type { ParquetConvertOptions, ParquetRowMapper } from "./parquet.js";
