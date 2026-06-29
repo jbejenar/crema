@@ -42,6 +42,39 @@ export interface VerifyOptions<TDoc> {
   checks?: DocCheck<TDoc>[];
   /** Field used as the document id for uniqueness + issue labelling. Default "_id". */
   idField?: string;
+  /**
+   * Declare that ids are emitted already grouped by a total order on the id —
+   * e.g. a flatten with `ORDER BY <id>`. Duplicate detection then compares each
+   * id to the previous one in O(1) memory instead of holding every id in a Set,
+   * which is mandatory past ~16.7M docs (V8's per-Set entry limit) and keeps RSS
+   * flat on a full-scale build. Duplicates are detected by exact string equality
+   * of adjacent ids — correct for ANY total-order sort, regardless of which
+   * ordering the producer used. The harness also asserts the order holds (via
+   * `idComparator`) so a broken sort assumption surfaces as an `order` issue
+   * rather than silently missing non-adjacent duplicates. Default false
+   * (Set-based, any order).
+   */
+  idsSorted?: boolean;
+  /**
+   * Ordering used for the `idsSorted` order-violation check. It MUST match the
+   * order the producer emitted (the semantics of its `ORDER BY`). The default is
+   * JS lexicographic string comparison — correct for fixed-width or
+   * already-lexicographic ids, but NOT for numeric ids ordered numerically (where
+   * `'10' < '2'` lexicographically would be a false violation). For a numeric
+   * stream pass e.g. `(a, b) => Number(a) - Number(b)`. Returns <0 / 0 / >0 like
+   * `Array.prototype.sort`'s compare function.
+   *
+   * It MUST be a **strict total order over the exact id strings** — i.e. return 0
+   * only when `a === b`. A comparator that equates *distinct* ids (a
+   * case-insensitive collation, or a numeric comparator where `"2"` and `"02"`
+   * tie) can leave equal canonical ids non-adjacent, which would defeat the O(1)
+   * uniqueness proof; the harness therefore reports such a tie as an `order`
+   * issue rather than silently missing the duplicate. If your producer orders by
+   * a collation or a derived key, append an exact-id tie-breaker (e.g.
+   * `ORDER BY lower(x), x`). Duplicate detection itself is always exact string
+   * equality and never uses this comparator.
+   */
+  idComparator?: (a: string, b: string) => number;
   /** If set, the total line count must equal this. */
   expectedCount?: number;
   /** Cap on stored issue samples (default 100). Counts are always exact. */
@@ -56,6 +89,13 @@ export interface VerifyReport {
   jsonFailures: number;
   schemaFailures: number;
   duplicateIds: number;
+  /**
+   * Ids seen out of order per `idComparator` — only possible (and only checked)
+   * when `idsSorted` is set; a non-zero value means the sorted assumption is
+   * wrong (or `idComparator` doesn't match the producer's ordering) and duplicate
+   * detection may have missed non-adjacent duplicates.
+   */
+  orderViolations: number;
   /** Per-check failure counts, keyed by check name. */
   checkFailures: Record<string, number>;
   /** Sampled issues (capped at maxIssues). */
@@ -65,7 +105,11 @@ export interface VerifyReport {
 }
 
 /**
- * Verify an NDJSON file. Streaming and memory-safe regardless of file size.
+ * Verify an NDJSON file. Streams line-by-line; memory stays flat in `idsSorted`
+ * mode (the only mode safe past ~16.7M docs). Without `idsSorted`, the id
+ * uniqueness check holds every distinct id in a Set, so memory grows with the
+ * distinct-id count and V8 caps a Set at ~16.7M entries — pass `idsSorted` for
+ * a sorted, full-scale stream.
  */
 export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<VerifyReport> {
   const {
@@ -73,6 +117,8 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
     schema,
     checks = [],
     idField = "_id",
+    idsSorted = false,
+    idComparator = (a, b) => (a < b ? -1 : a > b ? 1 : 0),
     expectedCount,
     maxIssues = 100,
   } = options;
@@ -82,9 +128,13 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
   let jsonFailures = 0;
   let schemaFailures = 0;
   let duplicateIds = 0;
+  let orderViolations = 0;
   const checkFailures: Record<string, number> = {};
   const issues: VerifyIssue[] = [];
-  const seenIds = new Set<string>();
+  // Sorted mode keeps only the previous id (O(1) memory); unsorted mode holds
+  // every id in a Set (bounded by the distinct-id count — see idsSorted).
+  const seenIds = idsSorted ? null : new Set<string>();
+  let prevId: string | null = null;
 
   const addIssue = (issue: VerifyIssue): void => {
     if (issues.length < maxIssues) issues.push(issue);
@@ -111,14 +161,56 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
     const rawId = doc[idField];
     const id = typeof rawId === "string" ? rawId : rawId == null ? null : String(rawId);
 
-    // id uniqueness
+    // id uniqueness — sorted mode compares to the previous id (O(1) memory),
+    // unsorted mode tracks all ids in a Set.
     if (id != null) {
-      if (seenIds.has(id)) {
-        duplicateIds++;
-        addIssue({ line: totalLines, id, check: "unique", message: `duplicate ${idField}: ${id}` });
-      } else {
-        seenIds.add(id);
+      if (seenIds) {
+        if (seenIds.has(id)) {
+          duplicateIds++;
+          addIssue({
+            line: totalLines,
+            id,
+            check: "unique",
+            message: `duplicate ${idField}: ${id}`,
+          });
+        } else {
+          seenIds.add(id);
+        }
+      } else if (prevId !== null) {
+        if (id === prevId) {
+          duplicateIds++;
+          addIssue({
+            line: totalLines,
+            id,
+            check: "unique",
+            message: `duplicate ${idField}: ${id}`,
+          });
+        } else {
+          // Adjacency-based uniqueness is sound only if equal canonical ids are
+          // adjacent — i.e. `idComparator` is a STRICT total order over the exact
+          // id strings: distinct adjacent ids must compare strictly ascending
+          // (> 0). A descending (< 0), equal (=== 0 for distinct ids, e.g. a
+          // case-insensitive collation or `"2"`/`"02"`), or non-finite result
+          // means equal ids could be interleaved and a non-adjacent duplicate
+          // silently missed — so flag it as an order issue instead.
+          const cmp = idComparator(id, prevId);
+          if (!(cmp > 0)) {
+            orderViolations++;
+            addIssue({
+              line: totalLines,
+              id,
+              check: "order",
+              message:
+                cmp === 0
+                  ? `${idField} ${id} and ${prevId} compare equal but differ — idComparator is not a strict total order over ids (add an exact-id tie-breaker)`
+                  : Number.isNaN(cmp)
+                    ? `idComparator returned NaN comparing ${idField} ${id} and ${prevId}`
+                    : `${idField} out of order: ${id} after ${prevId}`,
+            });
+          }
+        }
       }
+      prevId = id;
     }
 
     // schema validation
@@ -149,6 +241,7 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
     jsonFailures === 0 &&
     schemaFailures === 0 &&
     duplicateIds === 0 &&
+    orderViolations === 0 &&
     Object.keys(checkFailures).length === 0 &&
     (countMatches ?? true);
 
@@ -159,6 +252,7 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
     jsonFailures,
     schemaFailures,
     duplicateIds,
+    orderViolations,
     checkFailures,
     issues,
   };
