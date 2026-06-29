@@ -77,9 +77,27 @@ export interface CatalogueBranding {
   assetFilter?: (name: string) => boolean;
   /** Group patches under a parent; default: every release is top-level. */
   parseVersion?: (tag: string) => { base: string; patch: number | null };
+  /**
+   * Optional predicate selecting which releases to include, by tag (drafts and
+   * prereleases are already excluded). Default: accept every release — the
+   * engine is tag-shape agnostic, so a consumer publishing `2026.06.28` (no `v`)
+   * is not silently dropped. Version-shape decisions belong to `parseVersion`;
+   * supply this only to opt into stricter filtering.
+   */
+  releaseFilter?: (tag: string) => boolean;
 }
 
 // --- GitHub API ---
+
+/** Extract the `rel="next"` URL from a GitHub `Link` header, if any. */
+function nextPageUrl(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  for (const part of linkHeader.split(",")) {
+    const match = part.match(/<([^>]+)>\s*;\s*rel="next"/);
+    if (match) return match[1];
+  }
+  return null;
+}
 
 export async function fetchReleases(
   repo: string,
@@ -93,13 +111,20 @@ export async function fetchReleases(
   };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetchImpl(`https://api.github.com/repos/${repo}/releases?per_page=20`, {
-    headers,
-  });
-  if (!res.ok) {
-    throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  // Paginate: the releases endpoint caps at 100/page, so a repo with a long
+  // history needs every page followed via the Link header — otherwise older
+  // releases silently vanish from the catalogue once the count grows.
+  const all: GitHubRelease[] = [];
+  let url: string | null = `https://api.github.com/repos/${repo}/releases?per_page=100`;
+  while (url != null) {
+    const res = await fetchImpl(url, { headers });
+    if (!res.ok) {
+      throw new Error(`GitHub API error fetching ${url}: ${res.status} ${res.statusText}`);
+    }
+    all.push(...((await res.json()) as GitHubRelease[]));
+    url = nextPageUrl(res.headers?.get?.("Link") ?? null);
   }
-  return (await res.json()) as GitHubRelease[];
+  return all;
 }
 
 function escapeRegex(s: string): string {
@@ -115,12 +140,24 @@ function parseMetadataFromBody(
   const totalMatch = body.match(totalRe);
   const totalCount = totalMatch ? Number(totalMatch[1].replace(/,/g, "")) : 0;
 
-  // Per-key rows via the injected pattern (reset lastIndex — it is a shared global regex).
+  // Per-key rows via the injected pattern. Clone it into a local, guaranteed
+  // global regex: a non-global pattern would make `exec` return the first match
+  // forever (lastIndex never advances) and hang; cloning also avoids mutating
+  // the caller's shared regex state across releases.
+  const keyRe = new RegExp(
+    branding.keyPattern.source,
+    branding.keyPattern.flags.includes("g")
+      ? branding.keyPattern.flags
+      : branding.keyPattern.flags + "g",
+  );
   const keys: KeyCount[] = [];
-  branding.keyPattern.lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = branding.keyPattern.exec(body)) !== null) {
-    keys.push({ key: match[1], count: Number(match[2].replace(/,/g, "")) });
+  while ((match = keyRe.exec(body)) !== null) {
+    if (match[1] != null && match[2] != null) {
+      keys.push({ key: match[1], count: Number(match[2].replace(/,/g, "")) });
+    }
+    // Guard against a zero-width match looping in place.
+    if (match.index === keyRe.lastIndex) keyRe.lastIndex++;
   }
 
   const schemaMatch = body.match(/Schema:\s*v?([0-9.]+)/i);
@@ -142,10 +179,11 @@ export function processReleases(
 ): ReleaseData[] {
   const parseVersion = branding.parseVersion ?? noGrouping;
   const assetFilter = branding.assetFilter ?? defaultAssetFilter;
+  const releaseFilter = branding.releaseFilter ?? (() => true);
 
   const all: ReleaseData[] = releases
     .filter((r) => !r.draft && !r.prerelease)
-    .filter((r) => r.tag_name.startsWith("v"))
+    .filter((r) => releaseFilter(r.tag_name))
     .map((r) => {
       const meta = parseMetadataFromBody(r.body ?? "", branding);
       return {

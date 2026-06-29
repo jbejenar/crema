@@ -38,7 +38,31 @@ describe("buildManifestV2", () => {
   });
 
   it("throws when a source key is missing from files[]", () => {
-    expect(() => buildManifestV2({ ...base, sourceKeys: ["nope"] })).toThrow(/missing from files/);
+    expect(() =>
+      buildManifestV2({ ...base, index: { mappingsKey: "k" }, sourceKeys: ["nope"] }),
+    ).toThrow(/missing from files/);
+  });
+
+  it("counts all files for a no-index manifest when sourceKeys is omitted", () => {
+    const { sourceKeys: _omit, ...noKeys } = base;
+    const m = buildManifestV2(noKeys);
+    expect(m.total_records).toBe(150);
+    expect(m.index).toBeUndefined();
+    // Builder and validator agree end to end (the Bug-1 contract).
+    expect(validateManifestV2(JSON.parse(JSON.stringify(m)), "abn").total_records).toBe(150);
+  });
+
+  it("rejects a no-index manifest whose sourceKeys are not exactly all files", () => {
+    expect(() => buildManifestV2({ ...base, sourceKeys: [base.files[0].key] })).toThrow(
+      /must list exactly all file keys/,
+    );
+  });
+
+  it("requires sourceKeys when an index block is present", () => {
+    const { sourceKeys: _omit, ...noKeys } = base;
+    expect(() => buildManifestV2({ ...noKeys, index: { mappingsKey: "k" } })).toThrow(
+      /sourceKeys is required when an index block is present/,
+    );
   });
 });
 

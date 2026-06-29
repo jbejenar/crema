@@ -88,6 +88,37 @@ describe("processReleases", () => {
     expect(out[0].version).toBe("v2026.04");
     expect(out[0].patches?.map((p) => p.version)).toEqual(["v2026.04.1"]);
   });
+
+  it("retains non-v version tags by default (no hard-coded v prefix)", () => {
+    const out = processReleases(
+      [release({ tag_name: "2026.06.28" }), release({ tag_name: "release-2026.05" })],
+      branding,
+    );
+    expect(out.map((r) => r.version)).toEqual(["2026.06.28", "release-2026.05"]);
+  });
+
+  it("honours an opt-in releaseFilter when a consumer wants stricter filtering", () => {
+    const out = processReleases(
+      [release({ tag_name: "v2026.06.28" }), release({ tag_name: "nightly-2026.06.28" })],
+      { ...branding, releaseFilter: (tag) => tag.startsWith("v") },
+    );
+    expect(out.map((r) => r.version)).toEqual(["v2026.06.28"]);
+  });
+
+  it("does not hang on a non-global keyPattern and still parses keys", () => {
+    // A caller who forgets the `g` flag must not cause an infinite exec loop.
+    const nonGlobal: CatalogueBranding = {
+      ...branding,
+      keyPattern: /\|\s*(VIC|NSW|QLD|SA|WA|TAS|NT|ACT|OT)\s*\|\s*([0-9,]+)\s*\|/,
+    };
+    const [r] = processReleases([release({})], nonGlobal);
+    expect(r.keys).toEqual([
+      { key: "NSW", count: 1000 },
+      { key: "VIC", count: 234 },
+    ]);
+    // The caller's regex is not mutated (lastIndex untouched).
+    expect(nonGlobal.keyPattern.lastIndex).toBe(0);
+  });
 });
 
 describe("noGrouping", () => {
@@ -125,13 +156,48 @@ describe("fetchReleases", () => {
     }) as unknown as typeof fetch;
     const out = await fetchReleases("a/b", { userAgent: "long-black-catalogue", fetchImpl });
     expect(seenUrl).toContain("/repos/a/b/releases");
+    expect(seenUrl).toContain("per_page=100");
     expect(seenUA).toBe("long-black-catalogue");
     expect(out).toHaveLength(1);
   });
 
-  it("throws on a non-ok response", async () => {
+  it("follows the Link header across pages and accumulates every release", async () => {
+    const page1 = { headers: { Link: '<https://api.github.com/p2>; rel="next"' }, body: ["a"] };
+    const page2 = { headers: {}, body: ["b", "c"] };
+    const seen: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      seen.push(url);
+      const page = url.includes("/p2") ? page2 : page1;
+      return {
+        ok: true,
+        headers: { get: (k: string) => (page.headers as Record<string, string>)[k] ?? null },
+        json: async () => page.body.map((tag) => release({ tag_name: tag })),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const out = await fetchReleases("a/b", { fetchImpl });
+    expect(seen).toHaveLength(2);
+    expect(out.map((r) => r.tag_name)).toEqual(["a", "b", "c"]);
+  });
+
+  it("surfaces an error on a non-ok later page", async () => {
+    const fetchImpl = (async (url: string) => {
+      if (url.includes("/p2")) {
+        return { ok: false, status: 502, statusText: "Bad Gateway" } as unknown as Response;
+      }
+      return {
+        ok: true,
+        headers: {
+          get: (k: string) => (k === "Link" ? '<https://api.github.com/p2>; rel="next"' : null),
+        },
+        json: async () => [release({})],
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    await expect(fetchReleases("a/b", { fetchImpl })).rejects.toThrow(/error fetching .*502/);
+  });
+
+  it("throws on a non-ok first response", async () => {
     const fetchImpl = (async () =>
       ({ ok: false, status: 404, statusText: "Not Found" }) as Response) as unknown as typeof fetch;
-    await expect(fetchReleases("a/b", { fetchImpl })).rejects.toThrow(/GitHub API error: 404/);
+    await expect(fetchReleases("a/b", { fetchImpl })).rejects.toThrow(/error fetching .*404/);
   });
 });

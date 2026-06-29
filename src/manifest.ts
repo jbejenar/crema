@@ -62,8 +62,15 @@ export interface BuildManifestOptions {
   pipeline: ManifestPipeline;
   source: ManifestSource;
   files: ManifestFile[];
-  /** The ordered file keys that count toward `total_records`. */
-  sourceKeys: string[];
+  /**
+   * The ordered file keys that count toward `total_records`. **Required** when
+   * `index` is present (they also become the index's `source_keys`, which may be
+   * a subset of `files` for products that ship index-only assets). For a
+   * no-index manifest every file counts, so this is optional — and if you do
+   * pass it, it must list exactly all file keys (a guard against emitting a
+   * total that `validateManifestV2` would then reject).
+   */
+  sourceKeys?: string[];
   /** Include an OpenSearch `index` block (mappings + settings). Omit for none. */
   index?: { mappingsKey: string; settings?: ManifestIndexSettings };
 }
@@ -84,7 +91,33 @@ function recordsForSourceKeys(files: ManifestFile[], sourceKeys: string[]): numb
   }, 0);
 }
 
+function sameKeys(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((key, i) => key === b[i]);
+}
+
 export function buildManifestV2(options: BuildManifestOptions): ManifestV2 {
+  const allKeys = options.files.map((file) => file.key);
+
+  // Resolve the keys that count toward total_records, keeping the builder's
+  // contract identical to validateManifestV2's: with an index, the caller's
+  // sourceKeys drive the total (and the index block); without one, *every* file
+  // counts. This prevents emitting a no-index manifest whose total the validator
+  // would reject.
+  let sourceKeys: string[];
+  if (options.index != null) {
+    if (options.sourceKeys == null) {
+      throw new Error("buildManifestV2: sourceKeys is required when an index block is present");
+    }
+    sourceKeys = options.sourceKeys;
+  } else {
+    if (options.sourceKeys != null && !sameKeys(options.sourceKeys, allKeys)) {
+      throw new Error(
+        "buildManifestV2: for a no-index manifest, sourceKeys (when given) must list exactly all file keys in order",
+      );
+    }
+    sourceKeys = allKeys;
+  }
+
   const manifest: ManifestV2 = {
     manifest_version: 2,
     product: options.product,
@@ -93,13 +126,13 @@ export function buildManifestV2(options: BuildManifestOptions): ManifestV2 {
     pipeline: options.pipeline,
     source: options.source,
     files: options.files,
-    total_records: recordsForSourceKeys(options.files, options.sourceKeys),
+    total_records: recordsForSourceKeys(options.files, sourceKeys),
   };
   if (options.index != null) {
     manifest.index = {
       mappings_key: options.index.mappingsKey,
       settings: options.index.settings ?? DEFAULT_SETTINGS,
-      source_keys: options.sourceKeys,
+      source_keys: sourceKeys,
     };
   }
   return manifest;
