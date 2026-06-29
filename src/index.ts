@@ -37,3 +37,25 @@ export type {
 
 export { convertToParquet, ParquetSchema } from "./parquet.js";
 export type { ParquetConvertOptions, ParquetRowMapper } from "./parquet.js";
+
+export { buildManifestV2, validateManifestV2 } from "./manifest.js";
+export type {
+  ManifestV2,
+  ManifestFile,
+  ManifestPipeline,
+  ManifestSource,
+  ManifestIndex,
+  ManifestIndexSettings,
+  BuildManifestOptions,
+} from "./manifest.js";
+
+export { compareMetadata, formatComparisonReport } from "./compare-releases.js";
+export type { ComparisonResult, KeyDelta, ReportLabels } from "./compare-releases.js";
+
+export { fetchReleases, processReleases, generateHTML, noGrouping } from "./generate-catalogue.js";
+export type {
+  GitHubRelease,
+  ReleaseData,
+  KeyCount,
+  CatalogueBranding,
+} from "./generate-catalogue.js";

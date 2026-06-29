@@ -1,6 +1,6 @@
 {
   "name": "crema",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Shared streaming data-pipeline core for flat-white / long-black — download, flatten, split, compress, verify, metadata.",
   "type": "module",
   "main": "./dist/index.js",

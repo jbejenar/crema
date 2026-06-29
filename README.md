@@ -23,6 +23,9 @@ row→document mapper, a Zod `schema`, verify checks, and source config.
 | `generateMetadata` / `writeMetadata`                                             | build metadata (per-key counts, `sources[]`, attribution)                    |
 | `compareSnapshots` / `snapshotSchemas`                                           | JSON Schema diff + Zod snapshotting                                          |
 | `convertToParquet` / `ParquetSchema`                                             | streaming NDJSON → Parquet (schema + row-mapper injected)                    |
+| `buildManifestV2` / `validateManifestV2`                                         | release manifest (product param, optional OpenSearch index block)            |
+| `compareMetadata` / `formatComparisonReport`                                     | build-over-build per-key anomaly comparison (noun/key-label injected)        |
+| `fetchReleases` / `processReleases` / `generateHTML`                             | GitHub-release → HTML catalogue (branding + version-grouping injected)       |
 | `ckanResources` / `selectResources` / `byFormat` / `downloadFile` / `extractZip` | data.gov.au CKAN discovery + atomic download/extract                         |
 | `ProgressLogger`                                                                 | structured JSON progress logging                                             |
 
