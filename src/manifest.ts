@@ -95,8 +95,21 @@ function sameKeys(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((key, i) => key === b[i]);
 }
 
+function assertNoDuplicates(keys: string[], label: string): void {
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (seen.has(key)) {
+      throw new Error(`Manifest has duplicate ${label}: ${key}`);
+    }
+    seen.add(key);
+  }
+}
+
 export function buildManifestV2(options: BuildManifestOptions): ManifestV2 {
   const allKeys = options.files.map((file) => file.key);
+  // Duplicate file keys make total_records ambiguous (recordsForSourceKeys keys
+  // by file.key, so a dupe shadows the earlier entry). Reject up front.
+  assertNoDuplicates(allKeys, "file key");
 
   // Resolve the keys that count toward total_records, keeping the builder's
   // contract identical to validateManifestV2's: with an index, the caller's
@@ -108,6 +121,8 @@ export function buildManifestV2(options: BuildManifestOptions): ManifestV2 {
     if (options.sourceKeys == null) {
       throw new Error("buildManifestV2: sourceKeys is required when an index block is present");
     }
+    // Duplicate source keys would double-count the same file in total_records.
+    assertNoDuplicates(options.sourceKeys, "source key");
     sourceKeys = options.sourceKeys;
   } else {
     if (options.sourceKeys != null && !sameKeys(options.sourceKeys, allKeys)) {
@@ -201,6 +216,12 @@ export function validateManifestV2(
   }
 
   const files = parseFiles(manifest.files);
+  // Reject duplicate file keys before deriving the total — a dupe makes the
+  // file inventory ambiguous and can silently inflate/deflate total_records.
+  assertNoDuplicates(
+    files.map((f) => f.key),
+    "file key",
+  );
   const totalRecords = parseNonNegativeInteger(manifest.total_records, "total_records");
 
   if (!isRecord(manifest.pipeline)) {
@@ -219,6 +240,7 @@ export function validateManifestV2(
       throw new Error("Manifest field must be an object: index");
     }
     sourceKeys = parseSourceKeys(manifest.index.source_keys, "index.source_keys");
+    assertNoDuplicates(sourceKeys, "source key");
     if (!isRecord(manifest.index.settings)) {
       throw new Error("Manifest field must be an object: index.settings");
     }

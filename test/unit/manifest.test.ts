@@ -64,6 +64,24 @@ describe("buildManifestV2", () => {
       /sourceKeys is required when an index block is present/,
     );
   });
+
+  it("rejects duplicate file keys (no-index) so totals can't be inflated", () => {
+    const dupe = { ...base.files[0], records: 999 };
+    const { sourceKeys: _omit, ...noKeys } = base;
+    expect(() => buildManifestV2({ ...noKeys, files: [...base.files, dupe] })).toThrow(
+      /duplicate file key/,
+    );
+  });
+
+  it("rejects duplicate source_keys in an indexed manifest", () => {
+    expect(() =>
+      buildManifestV2({
+        ...base,
+        index: { mappingsKey: "k" },
+        sourceKeys: [base.files[0].key, base.files[0].key],
+      }),
+    ).toThrow(/duplicate source key/);
+  });
 });
 
 describe("validateManifestV2", () => {
@@ -98,5 +116,20 @@ describe("validateManifestV2", () => {
   it("rejects a non-object / wrong version", () => {
     expect(() => validateManifestV2(null, "abn")).toThrow(/must be an object/);
     expect(() => validateManifestV2({ manifest_version: 1 }, "abn")).toThrow(/version must be 2/);
+  });
+
+  it("rejects a manifest with duplicate file keys", () => {
+    const m = buildManifestV2(base);
+    const tampered = { ...m, files: [...m.files, m.files[0]], total_records: 250 };
+    expect(() => validateManifestV2(tampered, "abn")).toThrow(/duplicate file key/);
+  });
+
+  it("rejects a manifest with duplicate index.source_keys", () => {
+    const m = buildManifestV2({ ...base, index: { mappingsKey: "k" } });
+    const tampered = {
+      ...m,
+      index: { ...m.index, source_keys: [base.files[0].key, base.files[0].key] },
+    };
+    expect(() => validateManifestV2(tampered, "abn")).toThrow(/duplicate source key/);
   });
 });
