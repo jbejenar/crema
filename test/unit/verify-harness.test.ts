@@ -238,4 +238,54 @@ describe("verify — idsSorted (sorted-id mode)", () => {
     expect(report.duplicateIds).toBe(1);
     expect(report.orderViolations).toBe(0);
   });
+
+  // A comparator that equates DISTINCT ids (case-insensitive collation, or
+  // numeric "2"=="02") is not a strict total order over the canonical ids, so
+  // equal ids can be non-adjacent and a duplicate missed. The harness must flag
+  // this as an order issue (ok=false) rather than silently pass.
+  it("flags a comparator that ties distinct ids (case-insensitive), not a silent miss", async () => {
+    const path = write("ci-tie.ndjson", [
+      '{"_id":"a","value":1}',
+      '{"_id":"A","value":2}', // distinct id, ties with "a" under case-insensitive order
+      '{"_id":"a","value":3}', // real duplicate of line 1, NOT adjacent
+    ]);
+    const report = await verify({
+      ndjsonPath: path,
+      schema,
+      idsSorted: true,
+      idComparator: (a, b) => a.toLowerCase().localeCompare(b.toLowerCase()),
+    });
+    expect(report.ok).toBe(false);
+    expect(report.orderViolations).toBeGreaterThan(0);
+    expect(report.issues.some((i) => i.check === "order")).toBe(true);
+  });
+
+  it("flags numeric-equivalent ids that tie under a numeric comparator", async () => {
+    const path = write("num-tie.ndjson", [
+      '{"_id":"2","value":1}',
+      '{"_id":"02","value":2}', // Number("02") === Number("2") → ties, distinct strings
+      '{"_id":"2","value":3}',
+    ]);
+    const report = await verify({
+      ndjsonPath: path,
+      schema,
+      idsSorted: true,
+      idComparator: (a, b) => Number(a) - Number(b),
+    });
+    expect(report.ok).toBe(false);
+    expect(report.orderViolations).toBeGreaterThan(0);
+  });
+
+  it("flags a comparator that returns NaN", async () => {
+    const path = write("nan-cmp.ndjson", ['{"_id":"1","value":1}', '{"_id":"x","value":2}']);
+    const report = await verify({
+      ndjsonPath: path,
+      schema,
+      idsSorted: true,
+      idComparator: (a, b) => Number(a) - Number(b), // Number("x") → NaN
+    });
+    expect(report.ok).toBe(false);
+    expect(report.orderViolations).toBe(1);
+    expect(report.issues.some((i) => i.check === "order" && /NaN/.test(i.message))).toBe(true);
+  });
 });

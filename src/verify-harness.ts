@@ -61,9 +61,18 @@ export interface VerifyOptions<TDoc> {
    * JS lexicographic string comparison — correct for fixed-width or
    * already-lexicographic ids, but NOT for numeric ids ordered numerically (where
    * `'10' < '2'` lexicographically would be a false violation). For a numeric
-   * stream pass e.g. `(a, b) => Number(a) - Number(b)`. Duplicate detection is
-   * unaffected (always exact string equality). Returns <0 / 0 / >0 like
+   * stream pass e.g. `(a, b) => Number(a) - Number(b)`. Returns <0 / 0 / >0 like
    * `Array.prototype.sort`'s compare function.
+   *
+   * It MUST be a **strict total order over the exact id strings** — i.e. return 0
+   * only when `a === b`. A comparator that equates *distinct* ids (a
+   * case-insensitive collation, or a numeric comparator where `"2"` and `"02"`
+   * tie) can leave equal canonical ids non-adjacent, which would defeat the O(1)
+   * uniqueness proof; the harness therefore reports such a tie as an `order`
+   * issue rather than silently missing the duplicate. If your producer orders by
+   * a collation or a derived key, append an exact-id tie-breaker (e.g.
+   * `ORDER BY lower(x), x`). Duplicate detection itself is always exact string
+   * equality and never uses this comparator.
    */
   idComparator?: (a: string, b: string) => number;
   /** If set, the total line count must equal this. */
@@ -176,14 +185,29 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
             check: "unique",
             message: `duplicate ${idField}: ${id}`,
           });
-        } else if (idComparator(id, prevId) < 0) {
-          orderViolations++;
-          addIssue({
-            line: totalLines,
-            id,
-            check: "order",
-            message: `${idField} out of order: ${id} after ${prevId}`,
-          });
+        } else {
+          // Adjacency-based uniqueness is sound only if equal canonical ids are
+          // adjacent — i.e. `idComparator` is a STRICT total order over the exact
+          // id strings: distinct adjacent ids must compare strictly ascending
+          // (> 0). A descending (< 0), equal (=== 0 for distinct ids, e.g. a
+          // case-insensitive collation or `"2"`/`"02"`), or non-finite result
+          // means equal ids could be interleaved and a non-adjacent duplicate
+          // silently missed — so flag it as an order issue instead.
+          const cmp = idComparator(id, prevId);
+          if (!(cmp > 0)) {
+            orderViolations++;
+            addIssue({
+              line: totalLines,
+              id,
+              check: "order",
+              message:
+                cmp === 0
+                  ? `${idField} ${id} and ${prevId} compare equal but differ — idComparator is not a strict total order over ids (add an exact-id tie-breaker)`
+                  : Number.isNaN(cmp)
+                    ? `idComparator returned NaN comparing ${idField} ${id} and ${prevId}`
+                    : `${idField} out of order: ${id} after ${prevId}`,
+            });
+          }
         }
       }
       prevId = id;
