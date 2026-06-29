@@ -34,15 +34,3 @@ export type {
   SchemaSnapshot,
   JsonSchemaObject,
 } from "./schema-compat.js";
-
-export { buildManifestV2, validateManifestV2 } from "./manifest.js";
-export type {
-  ManifestV2,
-  ManifestFile,
-  ManifestPipeline,
-  ManifestSource,
-  ManifestIndex,
-  ManifestIndexSettings,
-  BuildManifestOptions,
-  ValidateManifestOptions,
-} from "./manifest.js";

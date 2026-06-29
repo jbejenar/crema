@@ -21,7 +21,7 @@ row→document mapper, a Zod `schema`, verify checks, and source config.
 | `compress`                                                                       | streaming gzip                                                               |
 | `verify`                                                                         | NDJSON verify harness (domain checks injected)                               |
 | `generateMetadata` / `writeMetadata`                                             | build metadata (per-key counts, `sources[]`, attribution)                    |
-| `buildManifestV2` / `validateManifestV2`                                         | release manifest (product-agnostic)                                          |
+| `compareSnapshots` / `snapshotSchemas`                                           | JSON Schema diff + Zod snapshotting                                          |
 | `ckanResources` / `selectResources` / `byFormat` / `downloadFile` / `extractZip` | data.gov.au CKAN discovery + atomic download/extract                         |
 | `ProgressLogger`                                                                 | structured JSON progress logging                                             |
 

@@ -98,47 +98,66 @@ export async function split(options: SplitOptions): Promise<SplitResult> {
     crlfDelay: Infinity,
   });
 
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-    totalCount++;
+  try {
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      totalCount++;
 
-    let doc: Record<string, unknown>;
-    try {
-      doc = JSON.parse(line) as Record<string, unknown>;
-    } catch (e) {
-      throw new Error(`Malformed JSON at line ${totalCount}: ${line.slice(0, 100)}`, { cause: e });
+      let doc: Record<string, unknown>;
+      try {
+        doc = JSON.parse(line) as Record<string, unknown>;
+      } catch (e) {
+        throw new Error(`Malformed JSON at line ${totalCount}: ${line.slice(0, 100)}`, {
+          cause: e,
+        });
+      }
+      const key = normalizeKey(keyFn(doc), otherBucket);
+      counts[key] = (counts[key] ?? 0) + 1;
+
+      if (!writers.has(key)) {
+        const outputPath = resolve(outputDir, buildFilename(prefix, version, key));
+        const ws = createWriteStream(outputPath);
+        ws.on("error", (err) => {
+          writeError ??= err;
+          rl.close();
+        });
+        writers.set(key, ws);
+      }
+
+      // Writer is guaranteed to exist — we just set it above if missing
+      const writer = writers.get(key) as WriteStream;
+      const ok = writer.write(line + "\n");
+      if (!ok) {
+        await waitForDrain(writer);
+      }
     }
-    const key = normalizeKey(keyFn(doc), otherBucket);
-    counts[key] = (counts[key] ?? 0) + 1;
-
-    if (!writers.has(key)) {
-      const outputPath = resolve(outputDir, buildFilename(prefix, version, key));
-      const ws = createWriteStream(outputPath);
-      ws.on("error", (err) => {
-        writeError ??= err;
-        rl.close();
-      });
-      writers.set(key, ws);
-    }
-
-    // Writer is guaranteed to exist — we just set it above if missing
-    const writer = writers.get(key) as WriteStream;
-    const ok = writer.write(line + "\n");
-    if (!ok) {
-      await waitForDrain(writer);
-    }
-  }
-
-  // Close all write streams
-  const closePromises: Promise<void>[] = [];
-  for (const writer of writers.values()) {
-    closePromises.push(
-      new Promise<void>((resolvePromise) => {
-        writer.end(() => resolvePromise());
-      }),
+  } finally {
+    // Always wait for every writer's fd to actually be released — even if a
+    // malformed line, a failing keyFn, or a write error throws mid-stream — so
+    // we never leak file descriptors. The completion signal is the "close"
+    // event (fd released), NOT `destroyed` (which only means destruction was
+    // *requested*): on an error path a stream can be `destroyed` before "close"
+    // fires, so short-circuiting on `destroyed` could settle split() with fds
+    // still open. We short-circuit only on `closed` (true after "close"), and
+    // otherwise await "close", calling end() only on a writer that isn't
+    // already tearing itself down. Writer errors during teardown are caught by
+    // the per-writer "error" handler registered at creation, and still resolve
+    // here because an errored fs.WriteStream auto-destroys and emits "close".
+    await Promise.all(
+      Array.from(
+        writers.values(),
+        (writer) =>
+          new Promise<void>((resolvePromise) => {
+            if (writer.closed) {
+              resolvePromise();
+              return;
+            }
+            writer.once("close", () => resolvePromise());
+            if (!writer.destroyed) writer.end();
+          }),
+      ),
     );
   }
-  await Promise.all(closePromises);
 
   if (writeError) {
     throw writeError;
