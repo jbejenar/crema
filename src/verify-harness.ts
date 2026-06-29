@@ -42,6 +42,16 @@ export interface VerifyOptions<TDoc> {
   checks?: DocCheck<TDoc>[];
   /** Field used as the document id for uniqueness + issue labelling. Default "_id". */
   idField?: string;
+  /**
+   * Declare that ids are emitted in ascending (sorted) order — e.g. a flatten
+   * with `ORDER BY <id>`. Duplicate detection then compares each id to the
+   * previous one in O(1) memory instead of holding every id in a Set, which is
+   * mandatory past ~16.7M docs (V8's per-Set entry limit) and keeps RSS flat on
+   * a full-scale build. The harness also asserts the order actually holds, so a
+   * broken sort assumption surfaces as an `order` issue rather than silently
+   * missing non-adjacent duplicates. Default false (Set-based, any order).
+   */
+  idsSorted?: boolean;
   /** If set, the total line count must equal this. */
   expectedCount?: number;
   /** Cap on stored issue samples (default 100). Counts are always exact. */
@@ -56,6 +66,12 @@ export interface VerifyReport {
   jsonFailures: number;
   schemaFailures: number;
   duplicateIds: number;
+  /**
+   * Ids seen out of ascending order — only possible (and only checked) when
+   * `idsSorted` is set; a non-zero value means the sorted assumption is wrong
+   * and duplicate detection may have missed non-adjacent duplicates.
+   */
+  orderViolations: number;
   /** Per-check failure counts, keyed by check name. */
   checkFailures: Record<string, number>;
   /** Sampled issues (capped at maxIssues). */
@@ -65,7 +81,11 @@ export interface VerifyReport {
 }
 
 /**
- * Verify an NDJSON file. Streaming and memory-safe regardless of file size.
+ * Verify an NDJSON file. Streams line-by-line; memory stays flat in `idsSorted`
+ * mode (the only mode safe past ~16.7M docs). Without `idsSorted`, the id
+ * uniqueness check holds every distinct id in a Set, so memory grows with the
+ * distinct-id count and V8 caps a Set at ~16.7M entries — pass `idsSorted` for
+ * a sorted, full-scale stream.
  */
 export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<VerifyReport> {
   const {
@@ -73,6 +93,7 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
     schema,
     checks = [],
     idField = "_id",
+    idsSorted = false,
     expectedCount,
     maxIssues = 100,
   } = options;
@@ -82,9 +103,13 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
   let jsonFailures = 0;
   let schemaFailures = 0;
   let duplicateIds = 0;
+  let orderViolations = 0;
   const checkFailures: Record<string, number> = {};
   const issues: VerifyIssue[] = [];
-  const seenIds = new Set<string>();
+  // Sorted mode keeps only the previous id (O(1) memory); unsorted mode holds
+  // every id in a Set (bounded by the distinct-id count — see idsSorted).
+  const seenIds = idsSorted ? null : new Set<string>();
+  let prevId: string | null = null;
 
   const addIssue = (issue: VerifyIssue): void => {
     if (issues.length < maxIssues) issues.push(issue);
@@ -111,14 +136,41 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
     const rawId = doc[idField];
     const id = typeof rawId === "string" ? rawId : rawId == null ? null : String(rawId);
 
-    // id uniqueness
+    // id uniqueness — sorted mode compares to the previous id (O(1) memory),
+    // unsorted mode tracks all ids in a Set.
     if (id != null) {
-      if (seenIds.has(id)) {
-        duplicateIds++;
-        addIssue({ line: totalLines, id, check: "unique", message: `duplicate ${idField}: ${id}` });
-      } else {
-        seenIds.add(id);
+      if (seenIds) {
+        if (seenIds.has(id)) {
+          duplicateIds++;
+          addIssue({
+            line: totalLines,
+            id,
+            check: "unique",
+            message: `duplicate ${idField}: ${id}`,
+          });
+        } else {
+          seenIds.add(id);
+        }
+      } else if (prevId !== null) {
+        if (id === prevId) {
+          duplicateIds++;
+          addIssue({
+            line: totalLines,
+            id,
+            check: "unique",
+            message: `duplicate ${idField}: ${id}`,
+          });
+        } else if (id < prevId) {
+          orderViolations++;
+          addIssue({
+            line: totalLines,
+            id,
+            check: "order",
+            message: `${idField} out of ascending order: ${id} after ${prevId}`,
+          });
+        }
       }
+      prevId = id;
     }
 
     // schema validation
@@ -149,6 +201,7 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
     jsonFailures === 0 &&
     schemaFailures === 0 &&
     duplicateIds === 0 &&
+    orderViolations === 0 &&
     Object.keys(checkFailures).length === 0 &&
     (countMatches ?? true);
 
@@ -159,6 +212,7 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
     jsonFailures,
     schemaFailures,
     duplicateIds,
+    orderViolations,
     checkFailures,
     issues,
   };
