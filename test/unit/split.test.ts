@@ -215,4 +215,24 @@ describe("split", () => {
     expect(existsSync(vicPath)).toBe(true);
     expect(readLines(vicPath)).toEqual(['{"_id":"A1","state":"VIC"}']);
   });
+
+  it("rejects (without hanging) when a writer cannot open — error path closes cleanly", async () => {
+    // outputDir's parent does not exist → createWriteStream emits ENOENT, which
+    // drives the writer-error → finally-close path that the `closed`-based close
+    // tracking guards. split() must reject and the close-await must settle (a
+    // 5s test timeout fails the test if the finally hangs). The exact
+    // "destroyed-before-close" race is not deterministically reproducible with
+    // real fs streams (they emit `close` promptly), so this guards that the
+    // error path completes rather than hangs.
+    const inputPath = tmpFile("writer-open-error.ndjson");
+    writeNdjson(inputPath, [
+      { _id: "A1", state: "VIC" },
+      { _id: "A2", state: "NSW" },
+    ]);
+    const missingDir = resolve(TMP_OUT, "does-not-exist", "nested");
+
+    await expect(
+      split({ inputPath, outputDir: missingDir, version: "v1", prefix: PREFIX }),
+    ).rejects.toThrow();
+  });
 });

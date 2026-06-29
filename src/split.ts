@@ -132,21 +132,28 @@ export async function split(options: SplitOptions): Promise<SplitResult> {
       }
     }
   } finally {
-    // Always close every open writer — even if a malformed line, a failing
-    // keyFn, or a write error throws mid-stream — so we never leak file
-    // descriptors. Resolve on "close" (fires after both a clean end() and an
-    // error-triggered destroy), short-circuiting the already-closed case.
+    // Always wait for every writer's fd to actually be released — even if a
+    // malformed line, a failing keyFn, or a write error throws mid-stream — so
+    // we never leak file descriptors. The completion signal is the "close"
+    // event (fd released), NOT `destroyed` (which only means destruction was
+    // *requested*): on an error path a stream can be `destroyed` before "close"
+    // fires, so short-circuiting on `destroyed` could settle split() with fds
+    // still open. We short-circuit only on `closed` (true after "close"), and
+    // otherwise await "close", calling end() only on a writer that isn't
+    // already tearing itself down. Writer errors during teardown are caught by
+    // the per-writer "error" handler registered at creation, and still resolve
+    // here because an errored fs.WriteStream auto-destroys and emits "close".
     await Promise.all(
       Array.from(
         writers.values(),
         (writer) =>
           new Promise<void>((resolvePromise) => {
-            if (writer.destroyed) {
+            if (writer.closed) {
               resolvePromise();
               return;
             }
             writer.once("close", () => resolvePromise());
-            writer.end();
+            if (!writer.destroyed) writer.end();
           }),
       ),
     );
