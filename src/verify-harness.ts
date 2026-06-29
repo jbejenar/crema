@@ -43,15 +43,29 @@ export interface VerifyOptions<TDoc> {
   /** Field used as the document id for uniqueness + issue labelling. Default "_id". */
   idField?: string;
   /**
-   * Declare that ids are emitted in ascending (sorted) order — e.g. a flatten
-   * with `ORDER BY <id>`. Duplicate detection then compares each id to the
-   * previous one in O(1) memory instead of holding every id in a Set, which is
-   * mandatory past ~16.7M docs (V8's per-Set entry limit) and keeps RSS flat on
-   * a full-scale build. The harness also asserts the order actually holds, so a
-   * broken sort assumption surfaces as an `order` issue rather than silently
-   * missing non-adjacent duplicates. Default false (Set-based, any order).
+   * Declare that ids are emitted already grouped by a total order on the id —
+   * e.g. a flatten with `ORDER BY <id>`. Duplicate detection then compares each
+   * id to the previous one in O(1) memory instead of holding every id in a Set,
+   * which is mandatory past ~16.7M docs (V8's per-Set entry limit) and keeps RSS
+   * flat on a full-scale build. Duplicates are detected by exact string equality
+   * of adjacent ids — correct for ANY total-order sort, regardless of which
+   * ordering the producer used. The harness also asserts the order holds (via
+   * `idComparator`) so a broken sort assumption surfaces as an `order` issue
+   * rather than silently missing non-adjacent duplicates. Default false
+   * (Set-based, any order).
    */
   idsSorted?: boolean;
+  /**
+   * Ordering used for the `idsSorted` order-violation check. It MUST match the
+   * order the producer emitted (the semantics of its `ORDER BY`). The default is
+   * JS lexicographic string comparison — correct for fixed-width or
+   * already-lexicographic ids, but NOT for numeric ids ordered numerically (where
+   * `'10' < '2'` lexicographically would be a false violation). For a numeric
+   * stream pass e.g. `(a, b) => Number(a) - Number(b)`. Duplicate detection is
+   * unaffected (always exact string equality). Returns <0 / 0 / >0 like
+   * `Array.prototype.sort`'s compare function.
+   */
+  idComparator?: (a: string, b: string) => number;
   /** If set, the total line count must equal this. */
   expectedCount?: number;
   /** Cap on stored issue samples (default 100). Counts are always exact. */
@@ -67,9 +81,10 @@ export interface VerifyReport {
   schemaFailures: number;
   duplicateIds: number;
   /**
-   * Ids seen out of ascending order — only possible (and only checked) when
-   * `idsSorted` is set; a non-zero value means the sorted assumption is wrong
-   * and duplicate detection may have missed non-adjacent duplicates.
+   * Ids seen out of order per `idComparator` — only possible (and only checked)
+   * when `idsSorted` is set; a non-zero value means the sorted assumption is
+   * wrong (or `idComparator` doesn't match the producer's ordering) and duplicate
+   * detection may have missed non-adjacent duplicates.
    */
   orderViolations: number;
   /** Per-check failure counts, keyed by check name. */
@@ -94,6 +109,7 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
     checks = [],
     idField = "_id",
     idsSorted = false,
+    idComparator = (a, b) => (a < b ? -1 : a > b ? 1 : 0),
     expectedCount,
     maxIssues = 100,
   } = options;
@@ -160,13 +176,13 @@ export async function verify<TDoc>(options: VerifyOptions<TDoc>): Promise<Verify
             check: "unique",
             message: `duplicate ${idField}: ${id}`,
           });
-        } else if (id < prevId) {
+        } else if (idComparator(id, prevId) < 0) {
           orderViolations++;
           addIssue({
             line: totalLines,
             id,
             check: "order",
-            message: `${idField} out of ascending order: ${id} after ${prevId}`,
+            message: `${idField} out of order: ${id} after ${prevId}`,
           });
         }
       }

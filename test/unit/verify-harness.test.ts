@@ -178,4 +178,64 @@ describe("verify — idsSorted (sorted-id mode)", () => {
     expect(sortedReport.validCount).toBe(setReport.validCount);
     expect(sortedReport.duplicateIds).toBe(setReport.duplicateIds);
   });
+
+  // The default order check is lexicographic; a numeric producer (ORDER BY a
+  // numeric column) needs a matching idComparator so its valid 1,2,10 stream is
+  // not misreported. Duplicate detection is unaffected (exact string equality).
+  it("accepts a numerically-sorted stream with a numeric idComparator", async () => {
+    const path = write("num-sorted.ndjson", [
+      '{"_id":"1","value":1}',
+      '{"_id":"2","value":2}',
+      '{"_id":"10","value":3}', // numerically ascending; lexicographically '10' < '2'
+    ]);
+    const report = await verify({
+      ndjsonPath: path,
+      schema,
+      idsSorted: true,
+      idComparator: (a, b) => Number(a) - Number(b),
+    });
+    expect(report.ok).toBe(true);
+    expect(report.orderViolations).toBe(0);
+  });
+
+  it("accepts a lexicographically-sorted stream with the default comparator", async () => {
+    const path = write("lex-sorted.ndjson", [
+      '{"_id":"1","value":1}',
+      '{"_id":"10","value":2}',
+      '{"_id":"2","value":3}', // lexicographic order: '1' < '10' < '2'
+    ]);
+    const report = await verify({ ndjsonPath: path, schema, idsSorted: true });
+    expect(report.ok).toBe(true);
+    expect(report.orderViolations).toBe(0);
+  });
+
+  it("reports orderViolations when the comparator doesn't match the producer's order", async () => {
+    const path = write("num-vs-lex.ndjson", [
+      '{"_id":"1","value":1}',
+      '{"_id":"2","value":2}',
+      '{"_id":"10","value":3}', // numeric order, but checked lexicographically → '10' < '2'
+    ]);
+    const report = await verify({ ndjsonPath: path, schema, idsSorted: true }); // default lexicographic
+    expect(report.ok).toBe(false);
+    expect(report.orderViolations).toBe(1);
+    expect(report.issues.some((i) => i.check === "order" && i.id === "10")).toBe(true);
+  });
+
+  it("still detects adjacent duplicates under a custom comparator", async () => {
+    const path = write("num-dup.ndjson", [
+      '{"_id":"1","value":1}',
+      '{"_id":"2","value":2}',
+      '{"_id":"2","value":3}', // adjacent duplicate
+      '{"_id":"10","value":4}',
+    ]);
+    const report = await verify({
+      ndjsonPath: path,
+      schema,
+      idsSorted: true,
+      idComparator: (a, b) => Number(a) - Number(b),
+    });
+    expect(report.ok).toBe(false);
+    expect(report.duplicateIds).toBe(1);
+    expect(report.orderViolations).toBe(0);
+  });
 });
