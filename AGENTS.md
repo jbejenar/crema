@@ -18,7 +18,7 @@ src/
   compress.ts         — streaming gzip
   verify-harness.ts   — NDJSON verify harness (checks injected)
   metadata.ts         — build metadata (per-key counts, sources, attribution)
-  manifest.ts         — release manifest v2 (product-agnostic)
+  schema-compat.ts    — JSON Schema diff + Zod snapshotting
   progress.ts         — ProgressLogger
   index.ts            — public API surface
 ```

@@ -19,7 +19,7 @@
     "node": ">=22.22.1"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",
@@ -31,7 +31,6 @@
   "author": "jbejenar",
   "license": "Apache-2.0",
   "dependencies": {
-    "@dsnp/parquetjs": "^1.8.7",
     "postgres": "^3.4.9",
     "zod": "^4.4.3"
   },
