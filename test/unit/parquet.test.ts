@@ -6,21 +6,22 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { randomBytes } from "node:crypto";
 import { ParquetReader } from "@dsnp/parquetjs";
 import { convertToParquet, ParquetSchema } from "../../src/parquet.js";
 
-const created: string[] = [];
-function tmp(ext: string): string {
-  const p = join(tmpdir(), `crema-parquet-${randomBytes(4).toString("hex")}${ext}`);
-  created.push(p);
-  return p;
+// One unpredictable, atomically-created temp dir per test (mkdtemp — not a
+// guessable path in the shared temp root); files live inside it.
+const dirs: string[] = [];
+function tmpDir(): string {
+  const d = mkdtempSync(join(tmpdir(), "crema-parquet-"));
+  dirs.push(d);
+  return d;
 }
 afterEach(() => {
-  for (const p of created.splice(0)) if (existsSync(p)) unlinkSync(p);
+  for (const d of dirs.splice(0)) if (existsSync(d)) rmSync(d, { recursive: true, force: true });
 });
 
 // A tiny doc: one required scalar, one optional scalar, one nested → JSON string.
@@ -53,8 +54,9 @@ async function readBack(path: string): Promise<Record<string, unknown>[]> {
 
 describe("convertToParquet", () => {
   it("converts NDJSON to Parquet and round-trips via the reader", async () => {
-    const input = tmp(".ndjson");
-    const output = tmp(".parquet");
+    const dir = tmpDir();
+    const input = join(dir, "in.ndjson");
+    const output = join(dir, "out.parquet");
     writeFileSync(
       input,
       [
@@ -85,8 +87,9 @@ describe("convertToParquet", () => {
   });
 
   it("writes an empty (zero-row) Parquet for an empty NDJSON", async () => {
-    const input = tmp(".ndjson");
-    const output = tmp(".parquet");
+    const dir = tmpDir();
+    const input = join(dir, "in.ndjson");
+    const output = join(dir, "out.parquet");
     writeFileSync(input, "");
     const { count } = await convertToParquet({
       inputPath: input,
@@ -98,12 +101,16 @@ describe("convertToParquet", () => {
     expect(await readBack(output)).toEqual([]);
   });
 
-  it("propagates a malformed line and still releases the writer", async () => {
-    const input = tmp(".ndjson");
-    const output = tmp(".parquet");
+  it("propagates a malformed line and leaves no partial file at the output path", async () => {
+    const dir = tmpDir();
+    const input = join(dir, "in.ndjson");
+    const output = join(dir, "out.parquet");
     writeFileSync(input, '{"_id":"A1","count":1,"nested":{}}\n{ not json }\n');
     await expect(
       convertToParquet({ inputPath: input, outputPath: output, schema, mapRow }),
     ).rejects.toThrow();
+    // Atomic write: no finalized-but-incomplete Parquet, and no leftover .part.
+    expect(existsSync(output)).toBe(false);
+    expect(existsSync(`${output}.part`)).toBe(false);
   });
 });

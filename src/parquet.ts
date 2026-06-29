@@ -12,7 +12,7 @@
  * against the same parquetjs the engine writes with (one dependency, here).
  */
 
-import { createReadStream } from "node:fs";
+import { createReadStream, renameSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { ParquetSchema, ParquetWriter } from "@dsnp/parquetjs";
 
@@ -33,14 +33,19 @@ export interface ParquetConvertOptions {
 }
 
 /**
- * Convert an NDJSON file to Parquet. Returns the row count written. The writer
- * is always closed (even on a malformed line) so the file descriptor is
- * released; the error still propagates to the caller.
+ * Convert an NDJSON file to Parquet. Returns the row count written.
+ *
+ * The write is **atomic**: rows are written to a `<outputPath>.part` file and
+ * renamed onto `outputPath` only after a clean close. A malformed line (or any
+ * other failure) closes the writer to release the fd and deletes the partial
+ * `.part`, then re-throws — so a failed run never leaves a finalized-but-
+ * incomplete Parquet at `outputPath` that a reader would treat as complete.
  */
 export async function convertToParquet(options: ParquetConvertOptions): Promise<{ count: number }> {
   const { inputPath, outputPath, schema, mapRow } = options;
+  const tmpPath = `${outputPath}.part`;
 
-  const writer = await ParquetWriter.openFile(schema, outputPath);
+  const writer = await ParquetWriter.openFile(schema, tmpPath);
   let count = 0;
   const rl = createInterface({ input: createReadStream(inputPath), crlfDelay: Infinity });
   try {
@@ -50,9 +55,15 @@ export async function convertToParquet(options: ParquetConvertOptions): Promise<
       await writer.appendRow(mapRow(doc));
       count++;
     }
-  } finally {
+    // Finalize the .part (writes the Parquet footer) before publishing it.
     await writer.close();
+  } catch (err) {
+    rl.close();
+    await writer.close().catch(() => {}); // release the fd if not already closed
+    rmSync(tmpPath, { force: true }); // never leave a partial file behind
+    throw err;
   }
 
+  renameSync(tmpPath, outputPath); // atomic publish
   return { count };
 }
