@@ -197,4 +197,22 @@ describe("split", () => {
     const outputDoc = JSON.parse(readLines(vicPath)[0]);
     expect(outputDoc).toEqual(doc);
   });
+
+  it("throws on a malformed line but still flushes + closes already-open writers (no fd leak)", async () => {
+    const inputPath = tmpFile("malformed.ndjson");
+    const outDir = resolve(TMP_OUT, "malformed");
+    mkdirSync(outDir, { recursive: true });
+    // Valid VIC line opens a writer, then a malformed line must abort the split.
+    writeFileSync(inputPath, '{"_id":"A1","state":"VIC"}\nNOT JSON\n{"_id":"A2","state":"NSW"}\n');
+
+    await expect(
+      split({ inputPath, outputDir: outDir, version: "v1", prefix: PREFIX }),
+    ).rejects.toThrow(/Malformed JSON at line 2/);
+
+    // The finally block must have closed + flushed the VIC writer opened before
+    // the throw — the file exists and holds the one valid line.
+    const vicPath = resolve(outDir, `${PREFIX}-v1-vic.ndjson`);
+    expect(existsSync(vicPath)).toBe(true);
+    expect(readLines(vicPath)).toEqual(['{"_id":"A1","state":"VIC"}']);
+  });
 });

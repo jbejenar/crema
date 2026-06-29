@@ -77,20 +77,22 @@ export async function downloadFile(
   const retries = opts.retries ?? 3;
   mkdirSync(dirname(destPath), { recursive: true });
 
+  const tmp = `${destPath}.part`;
   let lastError: unknown;
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const res = await fetchImpl(url, { headers: { "User-Agent": USER_AGENT } });
       if (!res.ok || res.body == null) {
+        await res.body?.cancel().catch(() => {}); // release the socket on a bad response
         throw new Error(`download "${url}" → HTTP ${res.status}`);
       }
-      const tmp = `${destPath}.part`;
       const webStream = res.body as unknown as NodeWebReadableStream<Uint8Array>;
       await pipeline(Readable.fromWeb(webStream), createWriteStream(tmp));
       renameSync(tmp, destPath);
       return;
     } catch (err) {
       lastError = err;
+      rmSync(tmp, { force: true }); // never leave a partial `.part` behind
       if (attempt < retries) {
         await new Promise<void>((r) => setTimeout(r, attempt * 1000));
       }
